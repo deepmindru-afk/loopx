@@ -47,8 +47,13 @@ This mode creates or claims a `codex/` issue branch, runs only the
 caller-declared validation command, and returns
 `issue_fix_caller_repo_branch_packet_v0`. The public packet records the repo
 label, issue branch, validation pass/fail, repo-relative changed files, and PR
-review readiness. It does not expose the local repo path, validation stdout or
-stderr, raw issue body/comment content, external remotes, or raw git output.
+review readiness. Before creating a new issue branch, it records a typed base
+snapshot and requires the approved local base branch to match its local
+tracking ref. A stale, ahead, or diverged base fails closed before branch
+creation. The command never refreshes remote refs implicitly; callers that need
+new remote evidence must fetch and reconcile it explicitly. It does not expose
+the local repo path, validation stdout or stderr, raw issue body/comment
+content, external remotes, or raw git output.
 Without `--execute`, the command is a dry-run plan and does not inspect or
 modify the local repository.
 

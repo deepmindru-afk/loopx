@@ -44,6 +44,7 @@ def _run_caller_repo_json_command(
     repo_path: Path,
     *,
     issue_branch: str = "codex/issue-123-public-metadata-fixture",
+    expect_success: bool = True,
 ) -> dict[str, Any]:
     result = subprocess.run(
         [
@@ -72,8 +73,10 @@ def _run_caller_repo_json_command(
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        check=True,
+        check=expect_success,
     )
+    if not expect_success and result.returncode == 0:
+        raise AssertionError("caller repo branch mode unexpectedly succeeded")
     if result.stderr.strip():
         raise AssertionError(f"unexpected stderr: {result.stderr}")
     payload = json.loads(result.stdout)
@@ -241,6 +244,8 @@ def main() -> int:
         assert caller_branch["branch_action"] == "created"
         assert caller_branch["branch_ready"] is True
         assert caller_branch["issue_branch"] == "codex/issue-123-public-metadata-fixture"
+        assert caller_branch["base_snapshot"]["relation"] == "no_tracking_ref"
+        assert caller_branch["base_snapshot"]["tracking_ref_refresh_performed"] is False
         assert caller_branch["validation"]["executed"] is True
         assert caller_branch["validation"]["passed"] is False
         assert caller_payload["review_packet"]["ready"] is False
@@ -261,6 +266,57 @@ def main() -> int:
         assert caller_ready_payload["review_packet"]["external_pr_created"] is False
         assert caller_ready_payload["review_packet"]["merge_performed"] is False
         _assert_no_local_paths(caller_ready_payload)
+
+    with tempfile.TemporaryDirectory(prefix="loopx-stale-base-smoke-") as tmp:
+        fixture_root = Path(tmp)
+        remote_path = fixture_root / "remote.git"
+        repo_path = fixture_root / "repo"
+        updater_path = fixture_root / "updater"
+        remote_path.mkdir()
+        repo_path.mkdir()
+        _run_git(remote_path, ["init", "--bare"])
+        _init_fixture_git_repo(repo_path)
+        _run_git(repo_path, ["remote", "add", "origin", str(remote_path)])
+        _run_git(repo_path, ["push", "--set-upstream", "origin", "main"])
+        current_payload = _run_caller_repo_json_command(
+            repo_path,
+            issue_branch="codex/issue-123-current-base",
+        )
+        assert current_payload["ok"] is True
+        current_snapshot = current_payload["caller_repo_branch"]["base_snapshot"]
+        assert current_snapshot["relation"] == "current"
+        assert current_snapshot["base_revision"] == current_snapshot["tracking_revision"]
+        _run_git(
+            fixture_root,
+            ["clone", "--branch", "main", str(remote_path), str(updater_path)],
+        )
+        _run_git(updater_path, ["config", "user.name", "LoopX Fixture"])
+        _run_git(
+            updater_path,
+            ["config", "user.email", "loopx-fixture@example.invalid"],
+        )
+        (updater_path / "remote-change.txt").write_text("new baseline\n", encoding="utf-8")
+        _run_git(updater_path, ["add", "remote-change.txt"])
+        _run_git(updater_path, ["commit", "-m", "Advance tracked baseline"])
+        _run_git(updater_path, ["push", "origin", "main"])
+        _run_git(repo_path, ["fetch", "origin", "main"])
+
+        stale_payload = _run_caller_repo_json_command(
+            repo_path,
+            issue_branch="codex/issue-123-stale-base",
+            expect_success=False,
+        )
+        assert stale_payload["ok"] is False
+        assert "base_branch does not match its local tracking ref" in stale_payload["error"]
+        branch_probe = subprocess.run(
+            ["git", "show-ref", "--verify", "--quiet", "refs/heads/codex/issue-123-stale-base"],
+            cwd=repo_path,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        assert branch_probe.returncode == 1
+        _assert_no_local_paths(stale_payload)
 
     markdown = subprocess.run(
         [
